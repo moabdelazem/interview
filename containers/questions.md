@@ -417,3 +417,514 @@ services:
           cpus: "0.25"
           memory: 256M
 ```
+
+---
+
+## Situational Container Questions
+
+**S1: A container keeps restarting in a crash loop. How would you debug this?**
+
+1. **Check container status and exit code:**
+
+   ```bash
+   docker ps -a              # See exit code
+   docker inspect container-name --format='{{.State.ExitCode}}'
+   ```
+
+2. **View logs:**
+
+   ```bash
+   docker logs container-name
+   docker logs --tail 50 container-name   # Last 50 lines
+   ```
+
+3. **Run interactively to see errors:**
+
+   ```bash
+   docker run -it --entrypoint /bin/sh image-name
+   ```
+
+4. **Check resource limits:**
+
+   ```bash
+   docker stats container-name
+   ```
+
+5. **Common causes:**
+   - Application crashes at startup (missing config, env vars)
+   - OOM killed (out of memory)
+   - Missing dependencies
+   - Incorrect CMD/ENTRYPOINT
+
+**S2: Your Docker build is very slow. How do you speed it up?**
+
+1. **Optimize layer caching:**
+
+   ```dockerfile
+   # BAD - cache invalidated on any code change
+   COPY . .
+   RUN npm install
+
+   # GOOD - dependencies cached separately
+   COPY package*.json ./
+   RUN npm install
+   COPY . .
+   ```
+
+2. **Use BuildKit:**
+
+   ```bash
+   DOCKER_BUILDKIT=1 docker build .
+   ```
+
+3. **Multi-stage builds** to reduce context size
+
+4. **Better .dockerignore:**
+
+   ```dockerignore
+   node_modules
+   .git
+   *.log
+   ```
+
+5. **Use smaller base images** (alpine variants)
+
+6. **Combine RUN commands** to reduce layers
+
+**S3: A container can't connect to another container. How do you troubleshoot?**
+
+1. **Check if both containers are on the same network:**
+
+   ```bash
+   docker network inspect network-name
+   ```
+
+2. **Verify container names are correct** (DNS resolution uses container names)
+
+3. **Test connectivity from inside the container:**
+
+   ```bash
+   docker exec -it container1 ping container2
+   docker exec -it container1 wget -qO- http://container2:port
+   ```
+
+4. **Check if the target container is listening:**
+
+   ```bash
+   docker exec -it container2 netstat -tlnp
+   ```
+
+5. **Common fixes:**
+   - Add both containers to the same network
+   - Use correct port (container port, not host port)
+   - Check firewall/security groups
+
+**S4: Your container runs fine locally but fails in production. What could be wrong?**
+
+1. **Environment differences:**
+   - Missing environment variables
+   - Different secrets/configs
+   - Network policies blocking traffic
+
+2. **Resource constraints:**
+   - Memory/CPU limits stricter in production
+   - Disk space issues
+
+3. **External dependencies:**
+   - Database connection issues
+   - API endpoints not accessible
+   - SSL/TLS certificate problems
+
+4. **Debugging steps:**
+
+   ```bash
+   # Check environment variables
+   docker exec container env
+
+   # Check if config files exist
+   docker exec container cat /app/config.yml
+
+   # Check resource usage
+   docker stats container
+   ```
+
+**S5: A container image is 2GB and needs to be reduced. What steps would you take?**
+
+1. **Analyze image layers:**
+
+   ```bash
+   docker history image-name
+   dive image-name  # Interactive tool
+   ```
+
+2. **Switch to smaller base image:**
+
+   ```dockerfile
+   # FROM node:18        # ~1GB
+   FROM node:18-alpine   # ~180MB
+   ```
+
+3. **Use multi-stage builds:**
+
+   ```dockerfile
+   FROM node:18 AS builder
+   RUN npm run build
+
+   FROM node:18-alpine
+   COPY --from=builder /app/dist ./dist
+   ```
+
+4. **Clean up in the same layer:**
+
+   ```dockerfile
+   RUN apt-get update && apt-get install -y \
+       package1 \
+       && rm -rf /var/lib/apt/lists/*
+   ```
+
+5. **Use distroless images** for minimal footprint
+
+6. **Remove unnecessary files** (docs, test files, dev dependencies)
+
+**S6: You need to access a file inside a running container. What are your options?**
+
+1. **Execute a shell and view:**
+
+   ```bash
+   docker exec -it container-name cat /path/to/file
+   docker exec -it container-name sh   # Interactive shell
+   ```
+
+2. **Copy file to host:**
+
+   ```bash
+   docker cp container-name:/path/to/file ./local-file
+   ```
+
+3. **Copy file into container:**
+
+   ```bash
+   docker cp ./local-file container-name:/path/to/file
+   ```
+
+4. **Use a volume mount** (plan ahead for development)
+
+**S7: Your application needs secrets. How do you securely pass them to containers?**
+
+**Bad practices (avoid):**
+
+```dockerfile
+# NEVER do this - secrets in image history
+ENV API_KEY=secret123
+```
+
+**Good practices:**
+
+1. **Environment variables at runtime:**
+
+   ```bash
+   docker run -e API_KEY=secret123 my-app
+   # Or from file
+   docker run --env-file .env my-app
+   ```
+
+2. **Docker secrets (Swarm/Compose):**
+
+   ```yaml
+   secrets:
+     db_password:
+       file: ./db_password.txt
+   services:
+     app:
+       secrets:
+         - db_password
+   ```
+
+3. **Mount secrets as files:**
+
+   ```bash
+   docker run -v /host/secrets:/run/secrets:ro my-app
+   ```
+
+4. **Use secret management tools** (Vault, AWS Secrets Manager)
+
+**S8: A container is consuming too much memory. How do you investigate and fix it?**
+
+1. **Check current usage:**
+
+   ```bash
+   docker stats container-name
+   ```
+
+2. **Set memory limits:**
+
+   ```bash
+   docker run -m 512m my-app
+   docker update --memory 512m container-name  # Update running container
+   ```
+
+3. **Enable OOM kill protection:** Check if container was OOM killed:
+
+   ```bash
+   docker inspect container --format='{{.State.OOMKilled}}'
+   ```
+
+4. **Debug inside container:**
+
+   ```bash
+   docker exec container-name top
+   docker exec container-name cat /proc/meminfo
+   ```
+
+5. **Application-level fixes:**
+   - Fix memory leaks in code
+   - Tune garbage collection (JVM, Node.js)
+   - Limit worker processes/threads
+
+**S9: You need to update a containerized application with zero downtime. How?**
+
+1. **Blue-Green Deployment:**
+   - Deploy new version alongside old
+   - Switch traffic after verification
+   - Remove old containers
+
+2. **Rolling Update (with orchestration):**
+
+   ```yaml
+   # docker-compose.yml
+   deploy:
+     replicas: 3
+     update_config:
+       parallelism: 1
+       delay: 10s
+   ```
+
+3. **Manual approach:**
+
+   ```bash
+   # Start new container
+   docker run -d --name app-v2 -p 3001:3000 myapp:v2
+
+   # Test new container
+   curl localhost:3001/health
+
+   # Update load balancer/proxy to new container
+   # Stop old container
+   docker stop app-v1
+   ```
+
+4. **Use health checks** to ensure new container is ready before switching
+
+**S10: How would you debug a container that exits immediately?**
+
+1. **Check exit code and logs:**
+
+   ```bash
+   docker ps -a   # See STATUS column
+   docker logs container-name
+   ```
+
+2. **Override entrypoint to keep container alive:**
+
+   ```bash
+   docker run -it --entrypoint /bin/sh image-name
+   # Or
+   docker run -it image-name tail -f /dev/null
+   ```
+
+3. **Common causes:**
+   - No foreground process (container exits when main process completes)
+   - Application crashes immediately
+   - Misconfigured CMD/ENTRYPOINT
+
+4. **Fix for web servers:**
+   ```dockerfile
+   # Ensure process runs in foreground
+   CMD ["nginx", "-g", "daemon off;"]
+   ```
+
+**S11: Your Docker Compose stack won't start because of dependency issues. How do you fix it?**
+
+1. **Use `depends_on` with health checks:**
+
+   ```yaml
+   services:
+     web:
+       depends_on:
+         db:
+           condition: service_healthy
+     db:
+       image: postgres
+       healthcheck:
+         test: ["CMD-SHELL", "pg_isready -U postgres"]
+         interval: 5s
+         timeout: 5s
+         retries: 5
+   ```
+
+2. **Add retry logic in application** for database connections
+
+3. **Use wait-for scripts:**
+
+   ```yaml
+   command: ["./wait-for-it.sh", "db:5432", "--", "npm", "start"]
+   ```
+
+4. **Note:** Plain `depends_on` only waits for container to START, not for it to be READY
+
+**S12: You need to run a database migration before your app starts. How do you structure this in containers?**
+
+1. **Init container pattern (Kubernetes-style in Compose):**
+
+   ```yaml
+   services:
+     migration:
+       image: myapp
+       command: npm run migrate
+       depends_on:
+         db:
+           condition: service_healthy
+     app:
+       image: myapp
+       command: npm start
+       depends_on:
+         migration:
+           condition: service_completed_successfully
+     db:
+       image: postgres
+   ```
+
+2. **Entrypoint script approach:**
+
+   ```dockerfile
+   COPY entrypoint.sh /
+   ENTRYPOINT ["/entrypoint.sh"]
+   ```
+
+   ```bash
+   #!/bin/sh
+   # entrypoint.sh
+   npm run migrate
+   exec npm start
+   ```
+
+3. **Separate migration step in CI/CD pipeline**
+
+**S13: Your container can connect to external services but not to the host machine. What's the issue?**
+
+1. **Use special DNS name:**
+
+   ```bash
+   # Linux (Docker 20.10+)
+   host.docker.internal
+
+   # Or get host IP
+   docker run --add-host=host.docker.internal:host-gateway myapp
+   ```
+
+2. **Use host network mode** (loses container isolation):
+
+   ```bash
+   docker run --network host myapp
+   ```
+
+3. **Check firewall rules** on the host
+
+4. **In Docker Compose:**
+   ```yaml
+   services:
+     app:
+       extra_hosts:
+         - "host.docker.internal:host-gateway"
+   ```
+
+**S14: You need to share data between two containers. What are your options?**
+
+1. **Named volumes (recommended):**
+
+   ```yaml
+   services:
+     writer:
+       volumes:
+         - shared-data:/data
+     reader:
+       volumes:
+         - shared-data:/data:ro # Read-only
+   volumes:
+     shared-data:
+   ```
+
+2. **Bind mount same host directory:**
+
+   ```bash
+   docker run -v /host/path:/data container1
+   docker run -v /host/path:/data container2
+   ```
+
+3. **Container-to-container via network** (for real-time data)
+
+4. **Copy files between containers:**
+   ```bash
+   docker cp container1:/data/file ./
+   docker cp ./file container2:/data/
+   ```
+
+**S15: A Docker build fails with "no space left on device". How do you resolve it?**
+
+1. **Clean up unused Docker resources:**
+
+   ```bash
+   # Remove unused images, containers, networks
+   docker system prune
+
+   # More aggressive - includes unused volumes
+   docker system prune -a --volumes
+
+   # Check disk usage
+   docker system df
+   ```
+
+2. **Clean specific resources:**
+
+   ```bash
+   docker image prune -a      # Remove unused images
+   docker container prune     # Remove stopped containers
+   docker volume prune        # Remove unused volumes
+   docker builder prune       # Remove build cache
+   ```
+
+3. **Increase Docker disk limit** (Docker Desktop settings)
+
+4. **Move Docker data directory** to larger disk
+
+**S16: Your app works in a container but can't write to a mounted volume. What's wrong?**
+
+1. **Check file permissions:**
+
+   ```bash
+   # Inside container
+   docker exec container-name ls -la /mounted/path
+   docker exec container-name id   # Check user ID
+   ```
+
+2. **Permission fixes:**
+
+   ```bash
+   # On host
+   chmod -R 777 /host/path  # Quick fix (not recommended for production)
+
+   # Or match user IDs
+   docker run -u $(id -u):$(id -g) -v /host/path:/data myapp
+   ```
+
+3. **In Dockerfile:**
+
+   ```dockerfile
+   RUN mkdir -p /data && chown 1000:1000 /data
+   USER 1000
+   ```
+
+4. **SELinux issues (RHEL/Fedora):**
+   ```bash
+   docker run -v /host/path:/data:Z myapp  # Z for SELinux labeling
+   ```
